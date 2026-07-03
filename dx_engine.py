@@ -1,6 +1,5 @@
-# dx_engine.py
 # -- coding: utf-8 -*-
-import os, datetime, cv2, shutil
+import os, datetime, cv2, shutil, json
 try:
     import speech_recognition as sr
 except ImportError:
@@ -16,14 +15,32 @@ try:
 except ImportError:
     canvas = None
 
+# --- V8 Multi-Modal Support ---
+try:
+    import PyPDF2
+    from docx import Document
+except ImportError:
+    PyPDF2 = None
+    Document = None
+
+# =============================================================================
+# DX-OS GLOBAL IDENTITY (SRS Section 2.3 & 5)
+# =============================================================================
+PROJECT_NAME = "DX-OS"
+VERSION = "1.1 (V8-Stable)"
+RELEASE_DATE = "1405/03/23"
+OWNER = "Seyed Hossein Ahmadi"
+CONTACT_MOBILE = "09191182313"
+CONTACT_EMAIL = "neumedal@gmail.com"
+
 class DX_OS_Engine:
     def __init__(self):
-        self.owner = "Sayed Hossain Ahmadi"
+        self.owner = OWNER
         self.base_dir = "DX_OS_Data"
         self.config_f = os.path.join(self.base_dir, "config.txt")
         self.logo_f = os.path.join(self.base_dir, "logo_path.txt")
+        self.user_info_f = os.path.join(self.base_dir, "user_info.json")
 
-        # تمام پوشه‌های مورد نیاز سیستم
         self.folders = [
             "Images", "Audio", "Text", "Backups", 
             "Sync_Pool", "Videos", "General_Narratives"
@@ -32,17 +49,13 @@ class DX_OS_Engine:
         self.keywords = ['غذا', 'خوراکی', 'قومیت', 'نقش', 'ملیت', 'ویژگی', 'زبان', 'فرهنگ']
 
     def _init_sys(self):
-        """ایجاد ساختار پوشه‌بندی در ابتدای اجرا"""
-        if not os.path.exists(self.base_dir): 
-            os.makedirs(self.base_dir)
+        if not os.path.exists(self.base_dir): os.makedirs(self.base_dir)
         for f in self.folders: 
             p = os.path.join(self.base_dir, f)
-            if not os.path.exists(p): 
-                os.makedirs(p)
-        if not os.path.exists(self.config_f): 
-            self.save_ip("http://10.180.243.185:8080")
+            if not os.path.exists(p): os.makedirs(p)
+        if not os.path.exists(self.config_f): self.save_ip("http://10.180.243.185:8080")
 
-    # --- تنظیمات شبکه و لوگو ---
+    # --- تنظیمات سیستم ---
     def get_ip(self):
         try:
             with open(self.config_f, "r", encoding="utf-8") as f: return f.read().strip()
@@ -61,19 +74,24 @@ class DX_OS_Engine:
     def save_logo_path(self, p):
         with open(self.logo_f, "w", encoding="utf-8") as f: f.write(p)
 
-    # --- مدیریت داده‌ها و ذخیره‌سازی ---
+    def save_user_identity(self, email, mobile):
+        data = {"email": email, "mobile": mobile}
+        with open(self.user_info_f, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        return True
+
+    def get_user_identity(self):
+        if os.path.exists(self.user_info_f):
+            with open(self.user_info_f, "r", encoding="utf-8") as f: return json.load(f)
+        return None
+
+    # --- مدیریت داده‌ها ---
     def save_data(self, st, c=None):
-        """ذخیره داده‌های خام (عکس، صدا، متن، ویدیو)"""
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        exts = {
-            'camera': ('Images', '.jpg'), 
-            'mic': ('Audio', '.wav'), 
-            'video': ('Videos', '.avi'), 
-            'keyboard': ('Text', '.txt')
-        }
+        exts = {'camera': ('Images', '.jpg'), 'mic': ('Audio', '.wav'), 'video': ('Videos', '.avi'), 'keyboard': ('Text', '.txt')}
+
         folder, ext = exts.get(st, ('Text', '.txt'))
         fp = os.path.join(self.base_dir, folder, f"{st}_{ts}{ext}")
-
         if st == 'keyboard':
             with open(fp, "w", encoding="utf-8") as f: f.write(c or "")
         elif st != 'video':
@@ -81,121 +99,98 @@ class DX_OS_Engine:
         return fp
 
     def upload_manual_file(self, src, category):
-        """آپلود دستی فایل‌ها به پوشه‌های مربوطه"""
         try:
-            dest_folder = os.path.join(self.base_dir, category)
-            fn = os.path.basename(src)
-            dst = os.path.join(dest_folder, fn)
-            shutil.copy(src, dst)
-            return dst
+            dst = os.path.join(self.base_dir, category, os.path.basename(src))
+            shutil.copy(src, dst); return dst
         except Exception as e: return f"Error: {str(e)}"
 
-    # --- مدیریت روایت‌های عمومی (General Narratives) ---
-    def save_general_narrative(self, category, text):
-        """ذخیره روایت‌های عمومی برای یک قومیت یا گروه"""
-
-        path = os.path.join(self.base_dir, "General_Narratives", f"{category}.txt")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write(text)
-        return path
-
-    def get_general_narratives_list(self):
-        """گرفتن لیست تمام روایت‌های عمومی تعریف شده"""
-        path = os.path.join(self.base_dir, "General_Narratives")
-        return [f.replace(".txt", "") for f in os.listdir(path) if f.endswith(".txt")]
-
-    # --- سیستم هوشمند تبدیل صدا به متن (STT) ---
-    def transcribe_audio(self, audio_path):
-        """تبدیل فایل صوتی .wav به متن فارسی"""
-        if sr is None:
-            return "Error: کتابخانه SpeechRecognition نصب نیست. لطفاً pip install SpeechRecognition را اجرا کنید."
+    def read_advanced_text(self, file_path):
+        """خواندن PDF, Word, TXT (SRS 1.3)"""
+        text_content = ""
         try:
-            recognizer = sr.Recognizer()
-            with sr.AudioFile(audio_path) as source:
-                audio_data = recognizer.record(source)
-                # استفاده از موتور گوگل برای زبان فارسی
-                text = recognizer.recognize_google(audio_data, language="fa-IR")
-                return text
-        except sr.UnknownValueError:
-            return "Error: صدای واضحی برای تبدیل به متن شناسایی نشد."
-        except sr.RequestError as e:
-            return f"Error: مشکل در اتصال به سرور گوگل: {e}"
-        except Exception as e:
-            return f"Error: {str(e)}"
+            if file_path.endswith('.txt'):
+                with open(file_path, 'r', encoding='utf-8') as f: text_content = f.read()
+            elif file_path.endswith('.pdf') and PyPDF2:
+                with open(file_path, 'rb') as f:
+                    pdf = PyPDF2.PdfReader(f)
+                    for page in pdf.pages: text_content += page.extract_text()
+            elif file_path.endswith('.docx') and Document:
+                doc = Document(file_path)
+                text_content = "\n".join([para.text for para in doc.paragraphs])
+            else: return "Error: Unsupported format or library missing."
+            return text_content
+        except Exception as e: return f"Error: {str(e)}"
 
-    # --- سینک سلسله‌مراتبی (Hierarchical Sync) ---
+    def create_smart_backup(self):
+        """بک‌آپ هوشمند (SRS 3.1)"""
+        try:
+            ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            dst = os.path.join(self.base_dir, "Backups", f"backup_{ts}")
+            os.makedirs(dst)
+            for item in os.listdir(self.base_dir):
+                if item != "Backups":
+                    s, d = os.path.join(self.base_dir, item), os.path.join(dst, item)
+                    shutil.copytree(s, d) if os.path.isdir(s) else shutil.copy2(s, d)
+            return f"Backup successful: {dst}"
+        except Exception as e: return f"Backup failed: {str(e)}"
+
+    # --- پردازش و هوش مصنوعی ---
+    def transcribe_audio(self, audio_path):
+        if sr is None: return "Error: SpeechRecognition not installed."
+        try:
+            r = sr.Recognizer()
+            with sr.AudioFile(audio_path) as source:
+                audio = r.record(source)
+                return r.recognize_google(audio, language="fa-IR")
+        except Exception as e: return f"Error: {str(e)}"
+
     def sync_narratives_with_images(self):
-        """تطبیق هوشمند عکس‌ها با روایت‌های اختصاصی یا عمومی"""
         results = []
         img_dir = os.path.join(self.base_dir, "Images")
-        txt_dir = os.path.join(self.base_dir, "Text")
-        gen_dir = os.path.join(self.base_dir, "General_Narratives")
-
         if not os.path.exists(img_dir): return None
-        imgs = [f for f in os.listdir(img_dir) if f.endswith(('.jpg', '.png', '.jpeg'))]
+        for img in [f for f in os.listdir(img_dir) if f.endswith(('.jpg', '.png'))]:
+            base = os.path.splitext(img)[0]
+            spec_p = os.path.join(self.base_dir, "Text", f"{base}.txt")
+            gen_p = os.path.join(self.base_dir, "General_Narratives", f"{base.split('_')[0]}.txt")
 
-        for img in imgs:
-            base_name = os.path.splitext(img)[0]
-            specific_txt = f"{base_name}.txt"
-            specific_path = os.path.join(txt_dir, specific_txt)
+            if os.path.exists(spec_p):
+                with open(spec_p, "r", encoding="utf-8") as f: type, cont = "SPECIFIC", f.read()
+            elif os.path.exists(gen_p):
+                with open(gen_p, "r", encoding="utf-8") as f: type, cont = "GENERAL", f.read()
+            else: type, cont = "NONE", "No narrative found."
+            results.append(f"📸 {img}\n📌 {type}\n📝 {cont}\n{'-'*30}")
+        return results
 
-            # اولویت ۱: روایت اختصاصی (فایل متنی با نام دقیق عکس)
-            if os.path.exists(specific_path):
-                with open(specific_path, "r", encoding="utf-8") as f:
-                    results.append(f"📸 Image: {img}\n📌 Type: SPECIFIC\n📝 Content: {f.read()}\n{'-'*30}")
-            else:
-                # اولویت ۲: روایت عمومی (بر اساس تگ نام فایل، مثلا Gilak_01 -> Gilak)
-                tag = base_name.split('_')[0] 
-                gen_path = os.path.join(gen_dir, f"{tag}.txt")
-                if os.path.exists(gen_path):
-                    with open(gen_path, "r", encoding="utf-8") as f:
-                        results.append(f"📸 Image: {img}\n📌 Type: GENERAL ({tag})\n📝 Content: {f.read()}\n{'-'*30}")
-                else:
-                    # اولویت ۳: هیچ روایتی یافت نشد
-                    results.append(f"📸 Image: {img}\n📌 Type: NONE\n📝 Content: No narrative found.\n{'-'*30}")
+    def save_general_narrative(self, cat, text):
+        p = os.path.join(self.base_dir, "General_Narratives", f"{cat}.txt")
+        with open(p, "w", encoding="utf-8") as f: f.write(text)
 
-        return results if results else None
+    def get_general_narratives_list(self):
+        p = os.path.join(self.base_dir, "General_Narratives")
+        return [f.replace(".txt", "") for f in os.listdir(p) if f.endswith(".txt")]
 
-    # --- ترجمه و گزارش‌گیری ---
     def get_filtered_translations(self):
-        """فیلتر کردن بر اساس کلمات کلیدی و ترجمه به انگلیسی/فارسی"""
         if Translator is None: return "Error: Install googletrans==4.0.0-rc1"
-        tr = Translator()
+        tr, results = Translator(), []
         tf = os.path.join(self.base_dir, "Text")
-        if not os.path.exists(tf): return None
+        for f in [f for f in os.listdir(tf) if f.endswith('.txt')]:
 
-        files = [f for f in os.listdir(tf) if f.endswith('.txt')]
-        results = []
-        for f in files:
-            p = os.path.join(tf, f)
-            with open(p, "r", encoding="utf-8") as file: 
+            with open(os.path.join(tf, f), "r", encoding="utf-8") as file:
                 c = file.read()
-
-                if any(key in c for key in self.keywords):
+                if any(k in c for k in self.keywords):
                     try:
-                        det = tr.detect(c).lang
-                        tgt = 'fa' if det == 'en' else 'en'
-                        res = tr.translate(c, dest=tgt).text
+                        res = tr.translate(c, dest='en' if tr.detect(c).lang == 'fa' else 'fa').text
                         results.append(f"File: {f}\nOriginal: {c}\nTranslated: {res}\n{'-'*40}")
                     except: continue
-        return results if results else None
+        return results
 
     def export_to_pdf(self, content_list):
-        """خروجی گرفتن از نتایج به صورت فایل PDF"""
         if canvas is None: return "Error: reportlab not installed"
-        try:
-            fn = f"DX_OS_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            c = canvas.Canvas(fn)
-            y = 800
-            c.setFont("Helvetica", 10)
-            for item in content_list:
-                for line in item.split('\n'):
-                    c.drawString(50, y, line[:90])
-                    y -= 15
-                y -= 10
-                if y < 50: 
-                    c.showPage()
-                    y = 800
-            c.save()
-            return fn
-        except Exception as e: return f"PDF Error: {str(e)}"
+        fn = f"DX_OS_Report_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        c = canvas.Canvas(fn); y = 800
+        for item in content_list:
+            for line in item.split('\n'):
+                c.drawString(50, y, line[:90]); y -= 15
+                if y < 50: c.showPage(); y = 800
+            y -= 10
+        c.save(); return fn
